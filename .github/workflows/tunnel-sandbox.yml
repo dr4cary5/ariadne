@@ -177,40 +177,55 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Create Hello World server
+      - name: Install Browser & VNC
+        if: runner.os == 'Linux'
         run: |
-          cat > server.js <<'JS'
-          const http = require('http');
-          const port = process.env.PORT || 8080;
-          const server = http.createServer((req, res) => {
-            res.writeHead(200, {'content-type':'text/plain'});
-            res.end(`Hello from ${process.platform} @ ${new Date().toISOString()} on port ${port}\n`);
-          });
-          server.listen(port, '0.0.0.0', () => console.log(`Listening on ${port}`));
-          JS
+          sudo apt-get update
+          sudo apt-get install -y xvfb openbox x11vnc websockify novnc git wget
 
-      - name: Start server & verify port (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
+          # نصب کروم
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+          sudo apt-get update && sudo apt-get install -y google-chrome-stable
+
+      - name: Start Browser + VNC + Web Server
+        if: runner.os == 'Linux'
         run: |
-          Start-Process -FilePath "node.exe" -ArgumentList "server.js"
-          for ($i = 1; $i -le 60; $i++) {
-            if (curl.exe localhost:$env:PORT) {
-              Write-Output "Port $env:PORT is open."
-              break
-            }
-            if ($i -eq 60) {
-              Write-Output "Server did not start on port $env:PORT in time."
-              exit 1
-            }
-            Start-Sleep -Seconds 1
-          }
+          # نمایشگر مجازی
+          Xvfb :99 -screen 0 1280x720x16 &
+          sleep 1
+          export DISPLAY=:99
+          openbox &
 
-      - name: Start server & verify port (macOS/Linux)
+          # کروم
+          google-chrome --no-sandbox --start-maximized https://google.com &
+          sleep 3
+
+          # VNC
+          x11vnc -display :99 -forever -nopw &
+          sleep 2
+
+          # websockify روی پورت 6080
+          websockify 6080 localhost:5900 &
+          sleep 1
+
+          # noVNC
+          novnc_dir=$(find / -name "vnc_lite.html" 2>/dev/null | head -1 | xargs dirname)
+          if [ -z "$novnc_dir" ]; then
+            git clone https://github.com/novnc/noVNC.git /opt/novnc
+            novnc_dir="/opt/novnc"
+          fi
+
+          # سرور HTTP ساده برای noVNC روی پورت 8080
+          cd "$novnc_dir"
+          nohup python3 -m http.server 8080 > /dev/null 2>&1 &
+          sleep 1
+          echo "noVNC ready on port 8080"
+
+      - name: Verify port (macOS/Linux)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          nohup node server.js > server-both.log 2>&1 &
           for i in {1..60}; do
             if (echo > /dev/tcp/127.0.0.1/$PORT) >/dev/null 2>&1; then
               echo "Port $PORT is open."
@@ -222,7 +237,6 @@ jobs:
             fi
             sleep 1
           done
-
       # ------------------ Cloudflare Tunnel ------------------
       - name: Start Cloudflare Tunnel
         if: env.TUNNEL == 'cloudflare'

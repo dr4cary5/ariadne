@@ -1,0 +1,71 @@
+name: Browser on ngrok
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  browser:
+    if: contains(github.event.issue.body, '[x] ON')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Install everything
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb openbox x11vnc websockify git wget
+
+          # کروم
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+          sudo apt-get update && sudo apt-get install -y google-chrome-stable
+
+          # ngrok
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar xf ngrok-v3-stable-linux-amd64.tgz
+          sudo mv ngrok /usr/local/bin/
+
+      - name: Start Browser + VNC
+        run: |
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x720x24 &
+          sleep 1
+          openbox &
+          google-chrome --no-sandbox --disable-gpu --start-maximized https://google.com &
+          sleep 3
+          x11vnc -display :99 -forever -nopw &
+          sleep 1
+          websockify 6080 localhost:5900 &
+          sleep 1
+
+          # دانلود و سرو noVNC روی پورت 8080
+          git clone https://github.com/novnc/noVNC.git /opt/novnc
+          cd /opt/novnc
+          nohup python3 -m http.server 8080 > /dev/null 2>&1 &
+
+      - name: Start ngrok
+        run: |
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
+          ngrok http 8080 --log=stdout > ngrok.log 2>&1 &
+          sleep 4
+          NGROK_URL=$(curl -s localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | cut -d'"' -f4 | head -1)
+          echo "BROWSER_URL=${NGROK_URL}/vnc_lite.html" >> $GITHUB_ENV
+
+      - name: Comment link
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = process.env.BROWSER_URL;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `🎉 **مرورگر آماده!**\n\n🔗 ${url}\n\n⏱ حداکثر ۸۰ دقیقه`
+            });
+
+      - name: Keep alive
+        run: sleep 4800
